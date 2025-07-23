@@ -702,9 +702,9 @@
         <DataField>None</DataField>
         <Prompt>None</Prompt>
         <BoundRectWidth>165.107422</BoundRectWidth>
-        <DispData>Busadresse: 218</DispData>
+        <DispData>ID: 218</DispData>
         <bRemovePreZeroAndEmpty>false</bRemovePreZeroAndEmpty>
-        <Data>Busadresse: ^F01</Data>
+        <Data>ID: ^F01</Data>
         <ItemInfoList />
         <BoundRectHeight>24.578125</BoundRectHeight>
         <BoundRect>

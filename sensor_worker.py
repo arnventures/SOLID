@@ -4,14 +4,19 @@ sensor_worker.py – schnell & robust
 Ablauf pro Sensor
 
 1. Warten auf *neuen* Sensor @1   (Serial noch nicht gesehen)
-2. Adresse/Buzzer setzen, Reboot senden
-3. Serien-Nr. SOFORT im Blatt „Import“, Spalte E speichern
+2. Serien-Nr. lesen  → sofort in Blatt „Import“ (Spalte E) schreiben
+3. Adresse/Buzzer setzen, Reboot senden
+4. 2 s Pause, OK zurückgeben
 """
 
 from __future__ import annotations
-import time, openpyxl
+import time
+import openpyxl
 from typing import List, Dict, Callable
 from serial_manager import SerialManager
+
+
+BOOT_WAIT_S = 2.0          # feste Boot-Pause nach Reboot
 
 
 class SensorWorker:
@@ -81,7 +86,9 @@ class SensorWorker:
     # ------------------------------------------------------------------ #
     def _configure(self, item: Dict) -> tuple[bool, int | None]:
         """
-        Adresse/Buzzer setzen, Reboot senden, Serial sofort in „Import“ speichern.
+        • Serial sofort in „Import“ schreiben + GUI-Callback
+        • Adresse/Buzzer setzen, Reboot senden
+        • 2 s warten, OK zurück
         """
         row, new_addr, disable_bz = (
             item["row"], item["new_addr"], item["buzzer"]
@@ -93,17 +100,27 @@ class SensorWorker:
 
         self.log(f"Config {row-1} → Adresse {new_addr}")
         try:
-            # Serien-Nr. lesen
+            # 1) Serien-Nr. lesen (@1)
             res = self.ser.read_holding(3, unit=1)
             if res.isError():
                 raise RuntimeError(res)
             serial = res.registers[0]
 
-            # Adresse setzen
+            # 1a) SOFORT in Import!E schreiben
+            import_row = max(1, row - 1)
+            if import_row > self.ws_import.max_row:
+                while self.ws_import.max_row < import_row:
+                    self.ws_import.append([None])
+                self.ws_import.cell(row=import_row, column=5, value=serial)
+            else:
+                self.ws_import.cell(row=import_row, column=5, value=serial)
+            item["serial"] = serial  # GUI zeigt Serial an
+
+            # 2) Adresse setzen
             if self.ser.write_single(4, new_addr, unit=1).isError():
                 raise RuntimeError("addr write")
 
-            # Buzzer ggf. deaktivieren
+            # 3) Buzzer ggf. deaktivieren
             if disable_bz:
                 r = self.ser.read_holding(255, unit=1)
                 if r.isError():
@@ -112,13 +129,13 @@ class SensorWorker:
                     255, r.registers[0] & ~(1 << 9), unit=1
                 )
 
-            # Reboot
+            # 4) Reboot
             if self.ser.write_single(17, 42330, unit=1).isError():
                 raise RuntimeError("restart")
 
-            # Serial in Blatt „Import“ – Spalte E derselben Zeile
-            self.ws_import[f"E{row}"] = serial
-            item["serial"] = serial
+            # 5) feste Pause → Sensor bootet
+            time.sleep(BOOT_WAIT_S)
+
             self.log(f"Sensor {row-1} OK (SN={serial})")
             return True, serial
 

@@ -135,16 +135,42 @@ class SensorGUI(tk.Tk):
 
     # ---------- COM-Port --------------------------------------------- #
     def _refresh_ports(self):
+        """Aktualisiert die Liste der verfügbaren COM-Ports und versucht, eine Verbindung herzustellen."""
         ports = [p.device for p in serial.tools.list_ports.comports()]
         self.cb_port["values"] = ports
+        self._log(f"Verfügbare Ports: {', '.join(ports) if ports else 'Keine'}")
         if ports:
-            self.cb_port.set(ports[0]); self._on_port_change()
+            current_port = self.cb_port.get()
+            if not current_port or current_port not in ports:
+                self.cb_port.set(ports[0])  # Standardmäßig ersten Port auswählen
+            self._on_port_change()
+        else:
+            self.cb_port.set("")  # Leeren, wenn keine Ports verfügbar
+            self.lab_status.config(text="Kein COM-Port verfügbar", background="red")
+            SER.close()
 
     def _on_port_change(self, *_):
-        p = self.cb_port.get()
-        ok = p and SER.connect(p)
-        self.lab_status.config(text=f"{p}: connected" if ok else "No Port",
-                               background="lightgreen" if ok else "red")
+        """Verbindet mit dem ausgewählten COM-Port."""
+        port = self.cb_port.get()
+        if not port:
+            self.lab_status.config(text="Kein Port ausgewählt", background="red")
+            SER.close()
+            return
+
+        self._log(f"Versuche Verbindung zu {port}...")
+        try:
+            ok = SER.connect(port)
+            self.lab_status.config(
+                text=f"{port}: connected" if ok else f"{port}: Verbindung fehlgeschlagen",
+                background="lightgreen" if ok else "red"
+            )
+            if not ok:
+                self._log(f"Fehler: Verbindung zu {port} konnte nicht hergestellt werden.")
+        except Exception as e:
+            self._log(f"Fehler beim Verbindungsaufbau zu {port}: {e}")
+            self.lab_status.config(text=f"{port}: Fehler", background="red")
+            SER.close()
+
 
 
     # ---------- Excel laden ------------------------------------------ #
@@ -300,62 +326,66 @@ class SensorGUI(tk.Tk):
             time.sleep(1)
         return False
 
-POLL_MAX_S = 2.0     # max. 2 s Verifikation
-POLL_STEP  = 0.2     # 5 Polls pro Sekunde
 
-# ---------- Einzel-Konfiguration ---------------------------------- #
-def _configure_single(self, ws_gas, row, new_addr, disable_bz) -> int | None:
-    """
-    Schnelle Konfig mit Kurz-Verifikation (max. 2 s).
-    Schreibt Serien-Nr. in Import!E.
-    """
-    if SKIP.is_set(): SKIP.clear(); return None
-    try:
-        # 1) Serien-Nr. lesen
-        res = SER.read_holding(3, unit=1)
-        if res.isError(): return None
-        serial = res.registers[0]
+    # ---------- Einzel-Konfiguration ---------------------------------- #
+    def _configure_single(self,
+                        ws_gas,           # GAS-Sheet (nur gelesen)
+                        row: int,         # Zeile im Excel
+                        new_addr: int,
+                        disable_bz: bool) -> int | None:
+        """
+        • Serial @1 lesen → sofort GUI + Import!
+        • Adresse/Buzzer schreiben
+        • Reboot (17 ← 42330)
+        • 2 s warten
+        • OK-Rückgabe – keine weitere Verifikation
+        """
+        if SKIP.is_set():                 # Skip?
+            SKIP.clear()
+            return None
 
-        # 2) Adresse schreiben
-        if SER.write_single(4, new_addr, unit=1).isError(): return None
+        try:
+            # 1) Serien-Nr. lesen
+            res = SER.read_holding(3, unit=1)
+            if res.isError():
+                return None
+            serial = res.registers[0]
 
-        # 3) Buzzer optional
-        if disable_bz:
-            rr = SER.read_holding(255, unit=1)
-            if rr.isError(): return None
-            SER.write_single(255, rr.registers[0] & ~(1 << 9), unit=1)
+            # **Serial sofort in GUI zeigen**  – Spalte „Serial“ wird
+            # im Worker direkt nach Rückgabe gesetzt.
+            # **Serial sofort in Blatt  Import  (Spalte E)**:
+            wb       = ws_gas.parent
+            ws_imp   = wb["Import"]
+            if row > ws_imp.max_row:                 # Zeile fehlt? ergänzen
+                while ws_imp.max_row < row - 1:
+                    ws_imp.append([None])
+                ws_imp.append([None, None, None, None, serial])
+            else:
+                ws_imp.cell(row=row, column=5, value=serial)
 
-        # 4) Reboot
-        if SER.write_single(17, 42330, unit=1).isError(): return None
+            # 2) Adresse schreiben
+            if SER.write_single(4, new_addr, unit=1).isError():
+                return None
 
-        # 5) Kurze Verifikation ≤ 2 s
-        deadline = time.time() + POLL_MAX_S
-        while time.time() < deadline:
-            if SKIP.is_set(): SKIP.clear(); return None
-            if not SER.read_holding(2, unit=new_addr).isError():
-                break                          # Sensor antwortet ⇒ OK
-            time.sleep(POLL_STEP)
-        else:
-            self._log(f"Sensor @{new_addr} keine Antwort – Fail")
-            return None                        # Timeout ⇒ Fail
+            # 3) Buzzer ggf. deaktivieren
+            if disable_bz:
+                rr = SER.read_holding(255, unit=1)
+                if rr.isError():
+                    return None
+                SER.write_single(255, rr.registers[0] & ~(1 << 9), unit=1)
 
-        # 6) Serien-Nr. in Blatt „Import“ schreiben
-        wb        = ws_gas.parent
-        ws_imp    = wb["Import"]
-        if row > ws_imp.max_row:
-            while ws_imp.max_row < row - 1:
-                ws_imp.append([None])
-            ws_imp.append([None, None, None, None, serial])
-        else:
-            ws_imp.cell(row=row, column=5, value=serial)
+            # 4) Reboot
+            if SER.write_single(17, 42330, unit=1).isError():
+                return None
 
-        return serial
+            # 5) feste Pause (Boot-Zeit) – 2 s
+            time.sleep(1.0)
 
-    except Exception as e:
-        self._log(f"Config-Fehler: {e}")
-        return None
+            return serial                       # ⇒ Worker setzt Status = OK
 
-
+        except Exception as e:
+            self._log(f"Config-Fehler: {e}")
+            return None
 
 
     # ---------- Help-Dialog ------------------------------------------ #
