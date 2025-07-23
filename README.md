@@ -1,0 +1,1 @@
+Exe is created with:  pyinstaller --onefile --noconsole --name "Inosent Anlage Aufbau Tool" --icon inosent.ico --add-data "inosent.ico;." --add-data "AutomaticLightDE.ezpx;." --add-data "AutomaticSensorDE.ezpx;." --add-data "PowerAutomateGodexLightDe.xlsx;." --add-data "PowerAutomateGodexSensorDe.xlsx;." gui.py
