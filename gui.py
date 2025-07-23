@@ -300,44 +300,61 @@ class SensorGUI(tk.Tk):
             time.sleep(1)
         return False
 
-    # ---------- Einzel-Konfiguration ---------------------------------- #
-    def _configure_single(self, ws, row, new_addr, disable_bz) -> int | None:
-        """
-        Adresse/Buzzer schreiben, Reboot senden und SOFORT OK zurückgeben.
-        Keine Boot-Pause, keine Poll-Schleife.
-        """
-        if SKIP.is_set():
-            SKIP.clear()
-            return None
-        try:
-            # Serien-Nr. lesen
-            r = SER.read_holding(3, unit=1)
-            if r.isError():
-                return None
-            serial = r.registers[0]
+POLL_MAX_S = 2.0     # max. 2 s Verifikation
+POLL_STEP  = 0.2     # 5 Polls pro Sekunde
 
-            # Adresse setzen
-            if SER.write_single(4, new_addr, unit=1).isError():
-                return None
+# ---------- Einzel-Konfiguration ---------------------------------- #
+def _configure_single(self, ws_gas, row, new_addr, disable_bz) -> int | None:
+    """
+    Schnelle Konfig mit Kurz-Verifikation (max. 2 s).
+    Schreibt Serien-Nr. in Import!E.
+    """
+    if SKIP.is_set(): SKIP.clear(); return None
+    try:
+        # 1) Serien-Nr. lesen
+        res = SER.read_holding(3, unit=1)
+        if res.isError(): return None
+        serial = res.registers[0]
 
-            # Buzzer ggf. deaktivieren
-            if disable_bz:
-                rr = SER.read_holding(255, unit=1)
-                if rr.isError():
-                    return None
-                SER.write_single(255, rr.registers[0] & ~(1 << 9), unit=1)
+        # 2) Adresse schreiben
+        if SER.write_single(4, new_addr, unit=1).isError(): return None
 
-            # Reboot
-            if SER.write_single(17, 42330, unit=1).isError():
-                return None
+        # 3) Buzzer optional
+        if disable_bz:
+            rr = SER.read_holding(255, unit=1)
+            if rr.isError(): return None
+            SER.write_single(255, rr.registers[0] & ~(1 << 9), unit=1)
 
-            # Sofort in Excel schreiben
-            ws[f"E{row}"] = serial
-            return serial
+        # 4) Reboot
+        if SER.write_single(17, 42330, unit=1).isError(): return None
 
-        except Exception as e:
-            self._log(f"Config-Fehler: {e}")
-            return None
+        # 5) Kurze Verifikation ≤ 2 s
+        deadline = time.time() + POLL_MAX_S
+        while time.time() < deadline:
+            if SKIP.is_set(): SKIP.clear(); return None
+            if not SER.read_holding(2, unit=new_addr).isError():
+                break                          # Sensor antwortet ⇒ OK
+            time.sleep(POLL_STEP)
+        else:
+            self._log(f"Sensor @{new_addr} keine Antwort – Fail")
+            return None                        # Timeout ⇒ Fail
+
+        # 6) Serien-Nr. in Blatt „Import“ schreiben
+        wb        = ws_gas.parent
+        ws_imp    = wb["Import"]
+        if row > ws_imp.max_row:
+            while ws_imp.max_row < row - 1:
+                ws_imp.append([None])
+            ws_imp.append([None, None, None, None, serial])
+        else:
+            ws_imp.cell(row=row, column=5, value=serial)
+
+        return serial
+
+    except Exception as e:
+        self._log(f"Config-Fehler: {e}")
+        return None
+
 
 
 
