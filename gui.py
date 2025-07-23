@@ -235,7 +235,8 @@ class SensorGUI(tk.Tk):
             self.lab_status.config(text="Läuft …", background="yellow")
 
             for (row, model, loc, addr, buzzer, _), iid in zip(sensors, ids):
-                if STOP.is_set(): break
+                if STOP.is_set():
+                    break
 
                 # Zeile als aktiv markieren
                 if prev_iid:
@@ -243,19 +244,25 @@ class SensorGUI(tk.Tk):
                 self.tree.item(iid, tags=("active",))
                 prev_iid = iid
 
+                # Skip?
                 if SKIP.is_set():
                     SKIP.clear()
                     self.tree.set(iid, "Status", "Skipped")
-                    self.tree.item(iid, tags=())          # Farbe zurück
-                    self._log(f"Sensor {row-1} übersprungen."); continue
-
-                if not self._wait_for_device_one():
-                    self.tree.set(iid, "Status", "Skipped")
-                    self.tree.item(iid, tags=())          # Farbe zurück
+                    self.tree.item(iid, tags=())
+                    self._log(f"Sensor {row-1} übersprungen.")
                     continue
 
+                # Auf Sensor @1 warten
+                if not self._wait_for_device_one():
+                    self.tree.set(iid, "Status", "Skipped")
+                    self.tree.item(iid, tags=())
+                    continue
+
+                # Konfigurieren (ohne Boot-Wait / Poll)
                 sn = self._configure_single(ws, row, addr,
                                             buzzer == "Buzzer Disable")
+
+                # Ergebnis sofort anzeigen
                 if sn is not None:
                     self.tree.set(iid, "Serial", sn)
                     self.tree.set(iid, "Status", "OK")
@@ -274,16 +281,20 @@ class SensorGUI(tk.Tk):
             done = not STOP.is_set()
             self.lab_status.config(text="Fertig" if done else "Abgebrochen",
                                    background="lightgreen")
-            self.btn_skip.config(state="disabled"); self.btn_start.config(state="normal")
+            self.btn_skip.config(state="disabled")
+            self.btn_start.config(state="normal")
 
     # ---------- Gerät @1 suchen -------------------------------------- #
     def _wait_for_device_one(self) -> bool:
         self._log("Suche Gerät @1 … (Skip überspringt; Stop beendet)")
         while not STOP.is_set():
-            if SKIP.is_set(): SKIP.clear(); return False
+            if SKIP.is_set():
+                SKIP.clear()
+                return False
             try:
                 r = SER.read_holding(2, unit=1)
-                if not r.isError(): return True
+                if not r.isError():
+                    return True
             except Exception as e:
                 self._log(f"Modbus-Fehler (wait): {e}")
             time.sleep(1)
@@ -291,28 +302,44 @@ class SensorGUI(tk.Tk):
 
     # ---------- Einzel-Konfiguration ---------------------------------- #
     def _configure_single(self, ws, row, new_addr, disable_bz) -> int | None:
-        if SKIP.is_set(): SKIP.clear(); return None
+        """
+        Adresse/Buzzer schreiben, Reboot senden und SOFORT OK zurückgeben.
+        Keine Boot-Pause, keine Poll-Schleife.
+        """
+        if SKIP.is_set():
+            SKIP.clear()
+            return None
         try:
+            # Serien-Nr. lesen
             r = SER.read_holding(3, unit=1)
-            if r.isError(): return None
+            if r.isError():
+                return None
             serial = r.registers[0]
 
-            if SER.write_single(4, new_addr, unit=1).isError(): return None
+            # Adresse setzen
+            if SER.write_single(4, new_addr, unit=1).isError():
+                return None
+
+            # Buzzer ggf. deaktivieren
             if disable_bz:
                 rr = SER.read_holding(255, unit=1)
-                if rr.isError(): return None
+                if rr.isError():
+                    return None
                 SER.write_single(255, rr.registers[0] & ~(1 << 9), unit=1)
-            if SER.write_single(17, 42330, unit=1).isError(): return None
 
-            for _ in range(10):
-                if SKIP.is_set(): SKIP.clear(); return None
-                time.sleep(0.5)
-            if SER.read_holding(2, unit=new_addr).isError(): return None
+            # Reboot
+            if SER.write_single(17, 42330, unit=1).isError():
+                return None
 
+            # Sofort in Excel schreiben
             ws[f"E{row}"] = serial
             return serial
+
         except Exception as e:
-            self._log(f"Config-Fehler: {e}"); return None
+            self._log(f"Config-Fehler: {e}")
+            return None
+
+
 
     # ---------- Help-Dialog ------------------------------------------ #
     def _show_help(self):
